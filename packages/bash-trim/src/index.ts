@@ -190,11 +190,6 @@ export default function (pi: ExtensionAPI) {
 
 		const parsed = stripBuiltinNotice(textBlock.text);
 		const command = typeof event.input?.command === "string" ? event.input.command : undefined;
-
-		if (shouldPreserveExactOutput(command, parsed.output, config.exactCommandMatchers, config.exactIfOutputLooksJson)) {
-			return;
-		}
-
 		const existingFullPath = details?.fullOutputPath ?? parsed.fullOutputPath;
 		if (existingFullPath) {
 			try {
@@ -202,6 +197,13 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				// Can't read — fall through to content
 			}
+		}
+
+		const exactnessOutput = fullOutput ?? parsed.output;
+		if (
+			shouldPreserveExactOutput(command, exactnessOutput, config.exactCommandMatchers, config.exactIfOutputLooksJson)
+		) {
+			return;
 		}
 
 		if (!fullOutput) {
