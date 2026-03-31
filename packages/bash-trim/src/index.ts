@@ -37,6 +37,25 @@ export type { TrimResult, TrimOptions, RowTrimResult, ColTrimmedLine } from "./t
 export { dedup, extractPattern, formatPattern, matchesPattern } from "./dedup.js";
 export type { LinePattern, DedupResult } from "./dedup.js";
 
+export const DEFAULT_EXACT_COMMAND_PATTERNS = [
+	String.raw`(?:^|\s|[;&|])exa\b`,
+	String.raw`(?:^|\s)--output\s+raw(?:\s|$)`,
+	String.raw`(?:^|\s)--json(?:\s|$)`,
+] as const;
+
+const BashTrimConfigSchema = v.object({
+	...TrimOptionsSchema.entries,
+	exactCommands: v.optional(v.array(v.string()), [...DEFAULT_EXACT_COMMAND_PATTERNS]),
+	exactIfOutputLooksJson: v.optional(v.boolean(), true),
+});
+
+type BashTrimConfig = v.InferOutput<typeof BashTrimConfigSchema>;
+
+interface LoadedConfig extends BashTrimConfig {
+	exactCommandMatchers: RegExp[];
+	trimOptions: v.InferOutput<typeof TrimOptionsSchema>;
+}
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 /** Config file location: ~/.pi/agent/extensions/pi-bash-trim.json */
@@ -44,7 +63,19 @@ function configPath(): string {
 	return join(process.env.HOME ?? "~", ".pi", "agent", "extensions", "pi-bash-trim.json");
 }
 
-function loadConfig(): v.InferOutput<typeof TrimOptionsSchema> {
+function compileRegexList(patterns: string[], path: string, field: string): RegExp[] {
+	return patterns.map((pattern) => {
+		try {
+			return new RegExp(pattern);
+		} catch (err) {
+			throw new Error(
+				`pi-bash-trim: invalid regex in ${field} at ${path}: "${pattern}" — ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	});
+}
+
+function loadConfig(): LoadedConfig {
 	const path = configPath();
 	let raw: unknown = {};
 	try {
@@ -54,11 +85,21 @@ function loadConfig(): v.InferOutput<typeof TrimOptionsSchema> {
 			throw new Error(`pi-bash-trim: failed to read config at ${path}: ${err instanceof Error ? err.message : err}`);
 		}
 	}
+
+	let parsed: BashTrimConfig;
 	try {
-		return v.parse(TrimOptionsSchema, raw);
+		parsed = v.parse(BashTrimConfigSchema, raw);
 	} catch (err) {
 		throw new Error(`pi-bash-trim: invalid config at ${path}: ${err instanceof Error ? err.message : err}`);
 	}
+
+	const { exactCommands, exactIfOutputLooksJson, ...trimOptions } = parsed;
+	return {
+		...parsed,
+		exactCommandMatchers: compileRegexList(exactCommands, path, "exactCommands"),
+		trimOptions,
+		exactIfOutputLooksJson,
+	};
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -101,6 +142,36 @@ export function stripBuiltinNotice(input: string): {
 	return { output: text, exitCodeLine, fullOutputPath };
 }
 
+export function looksLikeJson(input: string): boolean {
+	const text = input.trim();
+	if (!text) return false;
+
+	const looksStructured = (text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"));
+	if (!looksStructured) return false;
+
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function shouldPreserveExactOutput(
+	command: string | undefined,
+	output: string,
+	commandMatchers: RegExp[],
+	exactIfOutputLooksJson: boolean,
+): boolean {
+	if (command) {
+		for (const matcher of commandMatchers) {
+			if (matcher.test(command)) return true;
+		}
+	}
+
+	return exactIfOutputLooksJson && looksLikeJson(output);
+}
+
 // ── Extension ────────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -118,6 +189,11 @@ export default function (pi: ExtensionAPI) {
 		if (!textBlock) return;
 
 		const parsed = stripBuiltinNotice(textBlock.text);
+		const command = typeof event.input?.command === "string" ? event.input.command : undefined;
+
+		if (shouldPreserveExactOutput(command, parsed.output, config.exactCommandMatchers, config.exactIfOutputLooksJson)) {
+			return;
+		}
 
 		const existingFullPath = details?.fullOutputPath ?? parsed.fullOutputPath;
 		if (existingFullPath) {
@@ -135,7 +211,7 @@ export default function (pi: ExtensionAPI) {
 		if (!fullOutput || fullOutput === "(no output)") return;
 
 		// ── Trim ─────────────────────────────────────────────────────────
-		const result = trimOutput(fullOutput, config);
+		const result = trimOutput(fullOutput, config.trimOptions);
 
 		if (!result.columnsTrimmed && !result.rowsTrimmed && result.dedupedLines === 0) return;
 

@@ -10,6 +10,8 @@ pi install npm:pi-bash-trim
 
 No configuration needed.
 
+Structured outputs are preserved exactly by default: `exa` commands, commands with `--output raw` or `--json`, and outputs that parse as JSON objects or arrays bypass trimming entirely.
+
 ## The problem
 
 Agents are usually smart about `head`, `tail`, and `grep` — but large outputs still slip through: a `find` that matches too many files, a test suite that dumps every assertion, a dependency tree that goes five levels deep. Once that output is in the context window, the only way to get rid of it is to branch before it. Every subsequent turn pays the token cost.
@@ -37,7 +39,7 @@ The full unmodified output is always saved to a temp file referenced in the head
 | `vitest run --verbose` | 180 lines | ~100 lines | 68 passing tests deduped, 40 row-trimmed |
 | `curl lodash.min.js` | 170 lines | ~30 lines | Minified lines column-trimmed, rows cut |
 | `log show --last 1m` | 500 lines | ~55 lines | Kernel spam deduped + column/row trimmed |
-| `python3 -c '… 500 JSON records'` | 5,300 lines | ~200 lines | Row-trimmed (JSON structure too varied to dedup) |
+| `python3 -c '… 500 text records'` | 5,300 lines | ~200 lines | Row-trimmed (records too varied to dedup) |
 | `system_profiler` | 300 lines | ~170 lines | Row-trimmed (each section unique) |
 | `brew list` | 100 lines | 100 lines | Untouched — fits in budget |
 
@@ -65,7 +67,11 @@ The defaults work well for typical development output. To customize, create `~/.
 ```json
 {
   "maxTotalTokens": 3000,
-  "minDedupLines": 6
+  "minDedupLines": 6,
+  "exactCommands": [
+    "(?:^|\\s|[;&|])exa\\b",
+    "(?:^|\\s)--output\\s+raw(?:\\s|$)"
+  ]
 }
 ```
 
@@ -79,6 +85,8 @@ All fields are optional — omitted fields use defaults.
 | `maxTotalTokens` | 2,000 | BPE token budget before row trimming. ~80–100 lines of typical output. |
 | `minTokensToTrim` | 200 | Below this, output passes through unmodified. |
 | `minDedupLines` | 4 | Minimum consecutive similar lines to collapse. Raise to 6+ if you see false positives. |
+| `exactCommands` | built-in regex list | Regexes for commands that should bypass trimming and remain exact. Defaults include `exa`, `--output raw`, and `--json`. |
+| `exactIfOutputLooksJson` | `true` | Skip trimming when the stripped output parses as a JSON object or array. Useful for machine-readable CLI output. |
 
 ## Library usage
 
